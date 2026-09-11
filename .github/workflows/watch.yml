@@ -1,0 +1,30 @@
+name: NYRR 9+1 watch
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 min; GitHub may add its own delay
+  workflow_dispatch:          # lets you trigger a check by hand
+
+concurrency:
+  group: nyrr-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # State carries the set of already-alerted slots between runs so a slot
+      # that stays open doesn't re-ping every 10 minutes.
+      - uses: actions/cache@v4
+        with:
+          path: state.json
+          key: nyrr-state-${{ github.run_id }}
+          restore-keys: nyrr-state-
+
+      - run: python3 watch.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
