@@ -57,6 +57,9 @@ OPEN = {"AVL": "AVAILABLE", "NEA": "NEAR CAPACITY"}  # MED = medical (needs NYS 
 ASSIGNMENT_RE = re.compile(r'data-filterable-status="([A-Z]+)"(.*?)</li>', re.S)
 NAME_RE = re.compile(r'class="category-name[^"]*">(.*?)</div>', re.S)
 TAG_RE = re.compile(r'class="[^"]*tag-box[^"]*"[^>]*>\s*(.*?)\s*</span>', re.S)
+# Each role carries its own direct registration URL. Linking straight to it
+# skips the event page, which is pure latency when the seat lives ~3 minutes.
+REG_RE = re.compile(r'href="(https://register\.nyrr\.org/[^"]+)"')
 
 
 def fetch(slug, attempts=3):
@@ -88,10 +91,12 @@ def parse(page, with_raw=False):
             continue
         tags = [html.unescape(t.strip()).lower() for t in TAG_RE.findall(block)]
         role = html.unescape(re.sub(r"\s+", " ", name.group(1)).strip())
+        reg = REG_RE.search(block)
+        link = html.unescape(reg.group(1)) if reg else None
         if with_raw:
-            yield status, role, tags, re.sub(r"\s+", " ", m.group(0))[:600]
+            yield status, role, tags, re.sub(r"\s+", " ", m.group(0))[:600], link
         else:
-            yield status, role, tags
+            yield status, role, tags, link
 
 
 def eligible(status, tags):
@@ -140,12 +145,12 @@ def main():
         except Exception as e:
             errors.append(f"{name}: {e}")
             continue
-        for status, role, tags, block in parse(page, with_raw=True):
+        for status, role, tags, block, link in parse(page, with_raw=True):
             if eligible(status, tags):
-                found[(slug, role)] = (name, date, OPEN[status])
+                found[(slug, role)] = (name, date, OPEN[status], link)
                 raw[(slug, role)] = block
 
-    for (slug, role), (name, date, status) in sorted(found.items()):
+    for (slug, role), (name, date, status, link) in sorted(found.items()):
         print(f"OPEN  {name} ({date}) — {role} [{status}]")
     if errors:
         print("ERRORS:", "; ".join(errors), file=sys.stderr)
@@ -153,11 +158,11 @@ def main():
     new = {k: v for k, v in found.items() if k not in seen}
     if new:
         lines = ["🏃 <b>NYRR 9+1 SLOT OPEN</b>", ""]
-        for (slug, role), (name, date, status) in sorted(new.items()):
+        for (slug, role), (name, date, status, link) in sorted(new.items()):
             lines += [
                 f"<b>{html.escape(name)}</b> — {date}",
                 f"{html.escape(role)} · {status}",
-                f"{BASE}{slug}",
+                f"<b>REGISTER: {html.escape(link or BASE + slug)}</b>",
                 "",
             ]
         lines.append("No waitlist, first-come. Grab it now.")
@@ -167,7 +172,8 @@ def main():
             for k, v in sorted(new.items()):
                 fh.write(json.dumps({
                     "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "slug": k[0], "role": k[1], "status": v[2], "html": raw.get(k, ""),
+                    "slug": k[0], "role": k[1], "status": v[2],
+                    "register_url": v[3], "html": raw.get(k, ""),
                 }) + "\n")
         telegram("\n".join(lines))
         print(f"ALERTED on {len(new)} new opening(s)")

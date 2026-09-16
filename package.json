@@ -1,0 +1,21 @@
+{
+  "name": "nyrr-volunteer-watch",
+  "version": "1.0.0",
+  "description": "Polls every NYRR volunteer event page for the rest of 2026 and pings Telegram the moment a **9+1-eligible, non-medical** assignment opens up.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/per-simmons/nyrr-volunteer-watch.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/per-simmons/nyrr-volunteer-watch/issues"
+  },
+  "homepage": "https://github.com/per-simmons/nyrr-volunteer-watch#readme",
+  "type": "module"
+}
