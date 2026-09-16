@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
 
 BASE = "https://events.nyrr.org/"
@@ -51,10 +52,24 @@ NAME_RE = re.compile(r'class="category-name[^"]*">(.*?)</div>', re.S)
 TAG_RE = re.compile(r'class="[^"]*tag-box[^"]*"[^>]*>\s*(.*?)\s*</span>', re.S)
 
 
-def fetch(slug):
-    req = urllib.request.Request(BASE + slug, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode("utf-8", "replace")
+def fetch(slug, attempts=3):
+    """Fetch one event page, retrying transient 502/504s and read timeouts.
+
+    A page that errors is a silent blind spot: its assignments drop out of the
+    result, so an opening there would go unseen. Retrying costs nothing at this
+    poll rate and closes that gap.
+    """
+    last = None
+    for i in range(attempts):
+        try:
+            req = urllib.request.Request(BASE + slug, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.read().decode("utf-8", "replace")
+        except Exception as e:
+            last = e
+            if i < attempts - 1:
+                time.sleep(2 * (i + 1))
+    raise last
 
 
 def parse(page):
