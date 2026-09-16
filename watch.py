@@ -18,32 +18,37 @@ BASE = "https://events.nyrr.org/"
 STATE_FILE = os.environ.get("NYRR_STATE", "state.json")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0 Safari/537.36"
 
-# slug -> (display name, date label). Nov 1 events are omitted: Pat is running
-# the marathon that day and NYRR forbids running and volunteering the same event.
+# slug -> (display name, date label, ISO date). Nov 1 events are omitted: Pat is
+# running the marathon that day and NYRR forbids running and volunteering the
+# same event. Events before AVAILABLE_FROM are skipped entirely -- alerting on a
+# shift he cannot attend just trains him to ignore the alerts.
 EVENTS = [
-    ("new-balance-bronx-10m-volunteers", "Bronx 10M", "Sat Sep 19"),
-    ("tcs-new-york-city-training-series-18m-volunteers", "Training Series 18M", "Sun Sep 20"),
-    ("vcp-cross-country-1-volunteers", "Cross Country #1", "Sun Sep 27"),
-    ("vcp-cross-country-2-volunteers", "Cross Country #2", "Sun Oct 4"),
-    ("nyrr-jersey-city-5k-volunteers", "Jersey City 5K", "Sun Oct 4"),
-    ("nyrr-staten-island-half-volunteers", "Staten Island Half", "Sun Oct 11"),
-    ("rising-nyrr-fall-jamboree-volunteers", "Rising NYRR Fall Jamboree", "Sat Oct 17"),
-    ("pre-marathon-support-volunteers", "Pre-Marathon Support", "Oct 17-31"),
-    ("tcs-new-york-city-marathon-kids-kickoff-volunteers-queens", "Kids Kickoff (Queens)", "Sat Oct 24"),
-    ("tcs-new-york-city-marathon-kids-kickoff-volunteers-brooklyn", "Kids Kickoff (Brooklyn)", "Sat Oct 24"),
-    ("tcs-new-york-city-marathon-kids-kickoff-bronx-volunteers", "Kids Kickoff (Bronx)", "Sat Oct 24"),
-    ("tcs-new-york-city-marathon-kids-kickoff-staten-island-volunteers", "Kids Kickoff (Staten Island)", "Sat Oct 24"),
-    ("tcs-new-york-city-marathon-kids-kickoff-volunteers", "Kids Kickoff (Central Park)", "Sun Oct 25"),
-    ("tcs-new-york-city-marathon-pre-race-bag-check-volunteers", "Marathon Pre-Race Bag Check", "Fri Oct 30"),
-    ("2026-tcs-new-york-city-marathon-volunteers-marathon-opening-ceremony", "Marathon Opening Ceremony", "Fri Oct 30"),
-    ("abbott-dash-to-the-finish-line-5k-volunteers", "Abbott Dash to the Finish 5K", "Sat Oct 31"),
-    ("post-marathon-week-volunteers", "Post-Marathon Week", "Mon Nov 2"),
-    ("vcp-cross-country-3-volunteers", "Cross Country #3", "Sun Nov 15"),
-    ("race-to-deliver-4m-to-benefit-god-s-love-we-deliver-volunteers", "Race to Deliver 4M", "Sun Nov 22"),
-    ("nyrr-ted-corbitt-15k-volunteers", "Ted Corbitt 15K", "Sat Dec 5"),
-    ("nyrr-frosty-5k-volunteers", "Frosty 5K", "Sat Dec 12"),
-    ("nyrr-midnight-run-volunteers", "Midnight Run", "Thu Dec 31"),
+    ("new-balance-bronx-10m-volunteers", "Bronx 10M", "Sat Sep 19", "2026-09-19"),
+    ("tcs-new-york-city-training-series-18m-volunteers", "Training Series 18M", "Sun Sep 20", "2026-09-20"),
+    ("vcp-cross-country-1-volunteers", "Cross Country #1", "Sun Sep 27", "2026-09-27"),
+    ("vcp-cross-country-2-volunteers", "Cross Country #2", "Sun Oct 4", "2026-10-04"),
+    ("nyrr-jersey-city-5k-volunteers", "Jersey City 5K", "Sun Oct 4", "2026-10-04"),
+    ("nyrr-staten-island-half-volunteers", "Staten Island Half", "Sun Oct 11", "2026-10-11"),
+    ("rising-nyrr-fall-jamboree-volunteers", "Rising NYRR Fall Jamboree", "Sat Oct 17", "2026-10-17"),
+    ("pre-marathon-support-volunteers", "Pre-Marathon Support", "Oct 17-31", "2026-10-17"),
+    ("tcs-new-york-city-marathon-kids-kickoff-volunteers-queens", "Kids Kickoff (Queens)", "Sat Oct 24", "2026-10-24"),
+    ("tcs-new-york-city-marathon-kids-kickoff-volunteers-brooklyn", "Kids Kickoff (Brooklyn)", "Sat Oct 24", "2026-10-24"),
+    ("tcs-new-york-city-marathon-kids-kickoff-bronx-volunteers", "Kids Kickoff (Bronx)", "Sat Oct 24", "2026-10-24"),
+    ("tcs-new-york-city-marathon-kids-kickoff-staten-island-volunteers", "Kids Kickoff (Staten Island)", "Sat Oct 24", "2026-10-24"),
+    ("tcs-new-york-city-marathon-kids-kickoff-volunteers", "Kids Kickoff (Central Park)", "Sun Oct 25", "2026-10-25"),
+    ("tcs-new-york-city-marathon-pre-race-bag-check-volunteers", "Marathon Pre-Race Bag Check", "Fri Oct 30", "2026-10-30"),
+    ("2026-tcs-new-york-city-marathon-volunteers-marathon-opening-ceremony", "Marathon Opening Ceremony", "Fri Oct 30", "2026-10-30"),
+    ("abbott-dash-to-the-finish-line-5k-volunteers", "Abbott Dash to the Finish 5K", "Sat Oct 31", "2026-10-31"),
+    ("post-marathon-week-volunteers", "Post-Marathon Week", "Mon Nov 2", "2026-11-02"),
+    ("vcp-cross-country-3-volunteers", "Cross Country #3", "Sun Nov 15", "2026-11-15"),
+    ("race-to-deliver-4m-to-benefit-god-s-love-we-deliver-volunteers", "Race to Deliver 4M", "Sun Nov 22", "2026-11-22"),
+    ("nyrr-ted-corbitt-15k-volunteers", "Ted Corbitt 15K", "Sat Dec 5", "2026-12-05"),
+    ("nyrr-frosty-5k-volunteers", "Frosty 5K", "Sat Dec 12", "2026-12-12"),
+    ("nyrr-midnight-run-volunteers", "Midnight Run", "Thu Dec 31", "2026-12-31"),
 ]
+
+# Pat is out of state until ~Sep 25, 2026. Raise this if travel shifts.
+AVAILABLE_FROM = os.environ.get("NYRR_FROM", "2026-09-26")
 
 OPEN = {"AVL": "AVAILABLE", "NEA": "NEAR CAPACITY"}  # MED = medical (needs NYS license), SOL = filled
 
@@ -84,8 +89,17 @@ def parse(page):
 
 
 def eligible(status, tags):
-    """9+1 credit, open to a non-medical volunteer, and actually bookable."""
-    return status in OPEN and "9+1" in tags and "medical" not in tags
+    """9+1 credit, open to a non-medical volunteer, and actually bookable.
+
+    Tags are matched as substrings, not exact strings: NYRR labels some roles
+    "9+1" and others "9+1 credit", and an exact match silently skipped the
+    latter. "No +1" does not contain "9+1", so it is still correctly excluded.
+    """
+    if status not in OPEN:
+        return False
+    if any("medical" in t for t in tags):
+        return False
+    return any("9+1" in t for t in tags)
 
 
 def telegram(text):
@@ -112,7 +126,9 @@ def main():
         seen = set()
 
     found, errors = {}, []
-    for slug, name, date in EVENTS:
+    for slug, name, date, iso in EVENTS:
+        if iso < AVAILABLE_FROM:
+            continue
         try:
             page = fetch(slug)
         except Exception as e:
