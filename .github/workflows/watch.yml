@@ -29,6 +29,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           NYRR_STATE: state.json
+          NYRR_EVIDENCE: alerts-evidence.jsonl
         run: |
           git config user.name  "nyrr-watch bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -37,8 +38,8 @@ jobs:
             python3 watch.py || echo "poll failed, continuing"
             # State is committed rather than cached: actions/cache never saves on
             # a cancelled run, which would re-alert every open slot each hour.
-            if ! git diff --quiet state.json; then
-              git add state.json
+            if ! git diff --quiet state.json alerts-evidence.jsonl; then
+              git add state.json alerts-evidence.jsonl
               git commit -qm "state: open 9+1 slots changed [skip ci]"
               git pull --rebase --autostash -q || true
               git push -q || echo "push failed, will retry next change"

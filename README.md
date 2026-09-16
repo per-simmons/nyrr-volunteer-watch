@@ -28,3 +28,16 @@ the marathon, and NYRR does not let you run and volunteer at the same event.
     TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... python3 watch.py
 
 Prints every currently-open slot; alerts only on ones not already in `state.json`.
+
+## Verifying an alert after the fact
+
+Every alert appends a record to `alerts-evidence.jsonl` containing the UTC
+timestamp and the **raw markup NYRR served at that moment**, so a later "was that
+slot really open?" is answerable from the record rather than from trust.
+
+The parser reads `data-filterable-status`, the same field that renders the
+visible badge on the page — verified 1:1 against a browser rendering of
+nyrr-staten-island-half-volunteers on 2026-09-15 (all 9 roles matched).
+
+Note there is no third-party archive: the Wayback Machine has no snapshots of
+these event pages, so alerts fired before this log existed cannot be re-checked.

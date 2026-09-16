@@ -6,6 +6,7 @@ taken first-come. Observed in the wild: a "near capacity" 9+1 slot went to "all
 spots filled" in under an hour. So we poll often and alert the moment a slot
 flips to available.
 """
+import datetime
 import html
 import json
 import os
@@ -16,6 +17,7 @@ import urllib.request
 
 BASE = "https://events.nyrr.org/"
 STATE_FILE = os.environ.get("NYRR_STATE", "state.json")
+EVIDENCE = os.environ.get("NYRR_EVIDENCE", "alerts-evidence.jsonl")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0 Safari/537.36"
 
 # slug -> (display name, date label, ISO date). Nov 1 events are omitted: Pat is
@@ -77,15 +79,19 @@ def fetch(slug, attempts=3):
     raise last
 
 
-def parse(page):
-    """Yield (status_code, role_name, tags) for every assignment on the page."""
+def parse(page, with_raw=False):
+    """Yield (status_code, role_name, tags[, raw_html]) for each assignment."""
     for m in ASSIGNMENT_RE.finditer(page):
         status, block = m.group(1), m.group(2)
         name = NAME_RE.search(block)
         if not name:
             continue
         tags = [html.unescape(t.strip()).lower() for t in TAG_RE.findall(block)]
-        yield status, html.unescape(re.sub(r"\s+", " ", name.group(1)).strip()), tags
+        role = html.unescape(re.sub(r"\s+", " ", name.group(1)).strip())
+        if with_raw:
+            yield status, role, tags, re.sub(r"\s+", " ", m.group(0))[:600]
+        else:
+            yield status, role, tags
 
 
 def eligible(status, tags):
@@ -125,7 +131,7 @@ def main():
     except Exception:
         seen = set()
 
-    found, errors = {}, []
+    found, errors, raw = {}, [], {}
     for slug, name, date, iso in EVENTS:
         if iso < AVAILABLE_FROM:
             continue
@@ -134,9 +140,10 @@ def main():
         except Exception as e:
             errors.append(f"{name}: {e}")
             continue
-        for status, role, tags in parse(page):
+        for status, role, tags, block in parse(page, with_raw=True):
             if eligible(status, tags):
                 found[(slug, role)] = (name, date, OPEN[status])
+                raw[(slug, role)] = block
 
     for (slug, role), (name, date, status) in sorted(found.items()):
         print(f"OPEN  {name} ({date}) — {role} [{status}]")
@@ -154,6 +161,14 @@ def main():
                 "",
             ]
         lines.append("No waitlist, first-come. Grab it now.")
+        # Append-only evidence log: the exact markup NYRR served at alert time,
+        # so any later "was that real?" can be answered from the record.
+        with open(EVIDENCE, "a") as fh:
+            for k, v in sorted(new.items()):
+                fh.write(json.dumps({
+                    "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "slug": k[0], "role": k[1], "status": v[2], "html": raw.get(k, ""),
+                }) + "\n")
         telegram("\n".join(lines))
         print(f"ALERTED on {len(new)} new opening(s)")
     else:
