@@ -22,6 +22,10 @@ from playwright.sync_api import sync_playwright
 
 PROFILE = str(pathlib.Path(__file__).parent / "pw-profile")
 LOG = pathlib.Path(__file__).parent / "autoreg.log"
+# Once a seat is secured the job is done -- +1 is a single requirement. This
+# sentinel stops a KeepAlive relaunch from grabbing a second shift someone else
+# needs.
+DONE = pathlib.Path(__file__).parent / ".registered"
 
 # Never tick these: they assert a qualification Pat may not hold.
 FALSE_CLAIM = re.compile(r"i (confirm|certify|am)\b.*\b(leader|licensed|medical|physician|nurse|emt|guardian)", re.I)
@@ -34,6 +38,15 @@ def log(msg):
     print(line, flush=True)
     with open(LOG, "a") as f:
         f.write(line + "\n")
+
+
+def notify(text):
+    """Tell Pat what happened; he is not watching the log."""
+    try:
+        import watch as _w
+        _w.telegram(text)
+    except Exception as e:
+        log(f"(telegram failed: {e})")
 
 
 def register(page, url, option, accept_waiver):
@@ -107,6 +120,9 @@ def main():
             log("RESULT " + register(page, a.once, a.option, a.accept_waiver))
             return
 
+        if DONE.exists():
+            log("already registered (" + DONE.read_text().strip() + ") -- nothing to do")
+            return
         log(f"watching {len([e for e in watch.EVENTS if e[3] >= watch.AVAILABLE_FROM])} events, "
             f"every {a.poll}s, accept_waiver={a.accept_waiver}")
         tried = set()
@@ -132,8 +148,14 @@ def main():
                     res = register(page, link, opt.group(1), a.accept_waiver)
                     log(f"RESULT {name} / {role} -> {res}")
                     if res == "REGISTERED":
+                        DONE.write_text(f"{name} | {role} | {date} | {datetime.datetime.now()}\n")
+                        notify(f"\u2705 <b>NYRR 9+1 SECURED</b>\n\n{name} \u2014 {date}\n{role}\n\n"
+                               f"Registered automatically. Check Your Events on nyrr.org to confirm.")
                         log("DONE. Stopping.")
                         return
+                    if res.startswith("needs-human"):
+                        notify(f"\u26a0\ufe0f <b>NYRR seat needs you</b>\n\n{name} \u2014 {date}\n{role}\n"
+                               f"Bot stopped: {res}\n{link}")
             time.sleep(a.poll)
 
 
