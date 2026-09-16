@@ -8,11 +8,13 @@ flips to available.
 """
 import datetime
 import html
+import http.cookiejar
 import json
 import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 
 BASE = "https://events.nyrr.org/"
@@ -99,6 +101,38 @@ def parse(page, with_raw=False):
             yield status, role, tags, link
 
 
+CLOSED_MSG = re.compile(r"registration for this event is closed|maximum number of participants", re.I)
+
+
+def confirm_open(link, attempts=2):
+    """Ask the REGISTRATION system whether a seat is really bookable.
+
+    The event listing's status goes stale: on 2026-09-16 it advertised
+    Post-Marathon Week / Central Park Green Team as NEA with a live Register
+    link while registration had already closed. Alerting off the listing alone
+    sends Pat chasing seats that never existed.
+
+    Both open and closed events bounce through NYRR's Queue-it waiting room, so
+    the redirect itself proves nothing -- and without a cookie jar the hop loops
+    forever. Carry cookies, land on the real page, then read it.
+    """
+    if not link:
+        return True
+    for i in range(attempts):
+        try:
+            jar = http.cookiejar.CookieJar()
+            op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+            op.addheaders = [("User-Agent", UA)]
+            with op.open(link, timeout=30) as r:
+                body = r.read(400000).decode("utf-8", "replace")
+            return not CLOSED_MSG.search(body)
+        except Exception:
+            if i == attempts - 1:
+                return True          # never silently drop a possibly-real seat
+            time.sleep(1)
+    return True
+
+
 def eligible(status, tags):
     """9+1 credit, open to a non-medical volunteer, and actually bookable.
 
@@ -156,6 +190,17 @@ def main():
         print("ERRORS:", "; ".join(errors), file=sys.stderr)
 
     new = {k: v for k, v in found.items() if k not in seen}
+    # The listing lies. Confirm against the registration system before waking
+    # Pat, or he chases seats that were never bookable.
+    if new:
+        confirmed = {}
+        for k, v in new.items():
+            if confirm_open(v[3]):
+                confirmed[k] = v
+            else:
+                print(f"PHANTOM (listing says open, registration closed): {v[0]} / {k[1]}")
+                found.pop(k, None)
+        new = confirmed
     if new:
         lines = ["🏃 <b>NYRR 9+1 SLOT OPEN</b>", ""]
         for (slug, role), (name, date, status, link) in sorted(new.items()):

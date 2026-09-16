@@ -52,7 +52,17 @@ def notify(text):
 def register(page, url, option, accept_waiver):
     log(f"OPEN {url}")
     page.goto(url, wait_until="domcontentloaded", timeout=45000)
-    page.wait_for_timeout(2500)
+    # The assignment radios are rendered late; 2.5s was too short and produced a
+    # false "radio-missing" on a live seat. Wait for the control itself.
+    try:
+        page.wait_for_selector(f'input[name="event_option_key"][value="{option}"]',
+                               timeout=25000, state="attached")
+    except Exception:
+        body = page.inner_text("body")[:300].replace("\n", " | ")
+        if "log in" in body.lower() or "sign in" in body.lower():
+            return "needs-human:logged-out"
+        log(f"no radio after wait; page says: {body[:200]}")
+        return "radio-missing"
 
     radio = page.query_selector(f'input[name="event_option_key"][value="{option}"]')
     if not radio:
@@ -143,10 +153,16 @@ def main():
                     opt = re.search(r"option=([0-9a-f]+)", link)
                     if not opt:
                         continue
+                    if not watch.confirm_open(link):
+                        log(f"phantom (registration closed): {name} / {role}")
+                        continue
                     log(f"*** SEAT: {name} ({date}) {role} [{watch.OPEN[status]}]")
-                    tried.add(key)
                     res = register(page, link, opt.group(1), a.accept_waiver)
                     log(f"RESULT {name} / {role} -> {res}")
+                    # Only stop retrying on a definitive answer. A transient
+                    # failure must not blacklist a seat that is still live.
+                    if res in ("REGISTERED", "assignment-full") or res.startswith("needs-human"):
+                        tried.add(key)
                     if res == "REGISTERED":
                         DONE.write_text(f"{name} | {role} | {date} | {datetime.datetime.now()}\n")
                         notify(f"\u2705 <b>NYRR 9+1 SECURED</b>\n\n{name} \u2014 {date}\n{role}\n\n"
