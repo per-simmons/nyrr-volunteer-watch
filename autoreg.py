@@ -40,6 +40,31 @@ def log(msg):
         f.write(line + "\n")
 
 
+KEEPALIVE_EVERY = 240          # seconds; ASP.NET idle timeouts are typically 20 min
+
+
+def session_alive(page):
+    """Is this browser still signed into NYRR? Advisory only -- never blocking.
+
+    Checks manage.nyrr.org, where the signed-in dashboard lives. www.nyrr.org
+    is a different host and its /account page does not reliably reflect the
+    login, which made an actually-signed-in browser read as logged out.
+
+    Pass the DEDICATED checker tab, never the tab Pat is using -- navigating his
+    tab mid-login throws him out of the login flow.
+    """
+    try:
+        page.goto("https://manage.nyrr.org/communities/8415523",
+                  wait_until="domcontentloaded", timeout=40000)
+        page.wait_for_timeout(3500)
+        txt = page.inner_text("body").lower()
+        return any(k in txt for k in ("patrick", "simmons", "your events",
+                                      "membership status", "sign out", "log out"))
+    except Exception as e:
+        log(f"keepalive error: {str(e)[:100]}")
+        return True          # a network blip is not proof of logout
+
+
 def notify(text):
     """Tell Pat what happened; he is not watching the log."""
     try:
@@ -49,28 +74,67 @@ def notify(text):
         log(f"(telegram failed: {e})")
 
 
-def register(page, url, option, accept_waiver):
+FORENSICS = pathlib.Path(__file__).parent / "forensics"
+
+
+def snapshot(page, tag):
+    """Save what NYRR actually served, so a miss can be audited, not argued."""
+    try:
+        FORENSICS.mkdir(exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        (FORENSICS / f"{ts}-{tag}.html").write_text(page.content()[:800000])
+    except Exception:
+        pass
+
+
+def register(page, url, option, accept_waiver, role_name=None):
+    t0 = time.time()
     log(f"OPEN {url}")
     page.goto(url, wait_until="domcontentloaded", timeout=45000)
+    log(f"  [t+{time.time()-t0:.1f}s] page loaded")
     # The assignment radios are rendered late; 2.5s was too short and produced a
     # false "radio-missing" on a live seat. Wait for the control itself.
     try:
-        page.wait_for_selector(f'input[name="event_option_key"][value="{option}"]',
-                               timeout=25000, state="attached")
+        page.wait_for_selector('input[name="event_option_key"]', timeout=8000, state="attached")
     except Exception:
-        body = page.inner_text("body")[:300].replace("\n", " | ")
-        if "log in" in body.lower() or "sign in" in body.lower():
-            return "needs-human:logged-out"
-        log(f"no radio after wait; page says: {body[:200]}")
-        return "radio-missing"
+        pass
+
+    body_l = page.inner_text("body")[:2000].lower()
+    log(f"  [t+{time.time()-t0:.1f}s] body read")
+    if "registration for this event is closed" in body_l or "maximum number of participants" in body_l:
+        return "closed-per-registration"
+    if "session_expired" in page.url or "session expired" in body_l:
+        return "needs-human:logged-out"
 
     radio = page.query_selector(f'input[name="event_option_key"][value="{option}"]')
+    if not radio and role_name:
+        for cand in page.query_selector_all('input[name="event_option_key"]'):
+            lab = page.evaluate(
+                "e=>{const w=e.closest('li,div,label');return w?w.innerText.slice(0,160):''}", cand) or ""
+            if role_name.lower()[:24] in lab.lower():
+                if "full" in lab.lower():
+                    return "assignment-full"
+                radio = cand
+                log(f"matched assignment by name instead of option id: {role_name!r}")
+                break
     if not radio:
+        # Report what the REGISTRATION system says about every assignment --
+        # this is the authoritative view, unlike the listing page.
+        rows = []
+        for c in page.query_selector_all('input[name="event_option_key"]'):
+            lab = page.evaluate(
+                "e=>{const w=e.closest('li,div,label');return w?w.innerText.replace(/\\s+/g,' ').slice(0,80):''}", c) or ""
+            rows.append(f"{(c.get_attribute('value') or '')[:10]}={lab[:60]!r}")
+        log(f"  [t+{time.time()-t0:.1f}s] RADIO-MISSING want={option[:10]} "
+            f"n_radios={len(rows)}")
+        for r in rows:
+            log(f"      {r}")
+        snapshot(page, "radio-missing")
         return "radio-missing"
     if radio.get_attribute("disabled") is not None:
         return "assignment-full"
     radio.check(timeout=8000)
-    log("assignment selected")
+    log(f"  [t+{time.time()-t0:.1f}s] ASSIGNMENT SELECTED")
     page.wait_for_timeout(1200)
 
     for _ in range(4):                      # walk the wizard
@@ -95,20 +159,23 @@ def register(page, url, option, accept_waiver):
                 btn = (el, text); break
         if not btn:
             break
-        log(f"clicking '{btn[1]}'")
+        log(f"  [t+{time.time()-t0:.1f}s] clicking '{btn[1]}'")
         btn[0].click()
         page.wait_for_timeout(5000)
 
         errs = [e.inner_text().strip() for e in page.query_selector_all("[class*=error]")
                 if e.is_visible() and e.inner_text().strip()]
         if errs:
-            log("VALIDATION: " + " | ".join(errs[:4])[:200])
+            log(f"  [t+{time.time()-t0:.1f}s] VALIDATION: " + " | ".join(errs[:4])[:200])
+            snapshot(page, "validation")
             return "needs-human:validation"
 
         body = page.inner_text("body").lower()
         if any(k in body for k in ("you're registered", "you are registered",
                                    "registration complete", "thank you for registering",
                                    "confirmation number")):
+            log(f"  [t+{time.time()-t0:.1f}s] CONFIRMED REGISTERED")
+            snapshot(page, "registered")
             return "REGISTERED"
     return "needs-human:unknown-step"
 
@@ -123,8 +190,18 @@ def main():
     a = ap.parse_args()
 
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(PROFILE, headless=True)
+        # Attach to the long-lived browser-host process instead of launching a
+        # browser here, so restarting this bot never destroys Pat's session.
+        browser = p.chromium.connect_over_cdp("http://localhost:9222")
+        ctx = browser.contexts[0]
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        try:
+            page.goto("https://www.nyrr.org/account",
+                      wait_until="domcontentloaded", timeout=40000)
+            page.bring_to_front()
+        except Exception:
+            pass
+        checker = ctx.new_page()      # separate tab: never disturbs Pat's tab
 
         if a.once:
             log("RESULT " + register(page, a.once, a.option, a.accept_waiver))
@@ -135,8 +212,34 @@ def main():
             return
         log(f"watching {len([e for e in watch.EVENTS if e[3] >= watch.AVAILABLE_FROM])} events, "
             f"every {a.poll}s, accept_waiver={a.accept_waiver}")
+        # Wait for a human login in THIS window rather than dying. The window
+        # stays up for the life of the daemon; that is what keeps auth alive.
+        if session_alive(checker):
+            log("session OK at startup")
+        else:
+            log("session looks logged out -- watching anyway")
+            try:
+                page.goto("https://www.nyrr.org/account",
+                          wait_until="domcontentloaded", timeout=40000)
+            except Exception:
+                pass
+            notify("\U0001f510 <b>NYRR: sign in needed</b>\n\nA 'Chrome for Testing' window is "
+                   "open on your Mac. Sign into NYRR in it and leave it open. The bot keeps "
+                   "watching either way.")
         tried = set()
+        last_ka = time.time()
+        warned_out = False
         while True:
+            if time.time() - last_ka > KEEPALIVE_EVERY:
+                last_ka = time.time()
+                ok = session_alive(checker)
+                if ok:
+                    warned_out = False
+                elif not warned_out:
+                    warned_out = True
+                    log("SESSION LOST")
+                    notify("\u26a0\ufe0f <b>NYRR session logged out</b>\n\nAuto-register cannot "
+                           "book a seat until you sign in again.\nRun ./relogin.sh then ./resume.sh")
             for slug, name, date, iso in watch.EVENTS:
                 if iso < watch.AVAILABLE_FROM:
                     continue
@@ -153,15 +256,14 @@ def main():
                     opt = re.search(r"option=([0-9a-f]+)", link)
                     if not opt:
                         continue
-                    if not watch.confirm_open(link):
-                        log(f"phantom (registration closed): {name} / {role}")
-                        continue
-                    log(f"*** SEAT: {name} ({date}) {role} [{watch.OPEN[status]}]")
-                    res = register(page, link, opt.group(1), a.accept_waiver)
+                    log(f"*** SEAT: {name} ({date}) {role} [{watch.OPEN[status]}] "
+                        f"listing_seen={datetime.datetime.now().strftime('%H:%M:%S')}")
+                    res = register(checker, link, opt.group(1), a.accept_waiver, role)
                     log(f"RESULT {name} / {role} -> {res}")
                     # Only stop retrying on a definitive answer. A transient
                     # failure must not blacklist a seat that is still live.
-                    if res in ("REGISTERED", "assignment-full") or res.startswith("needs-human"):
+                    if res in ("REGISTERED", "assignment-full", "closed-per-registration") \
+                            or res.startswith("needs-human"):
                         tried.add(key)
                     if res == "REGISTERED":
                         DONE.write_text(f"{name} | {role} | {date} | {datetime.datetime.now()}\n")
@@ -169,6 +271,8 @@ def main():
                                f"Registered automatically. Check Your Events on nyrr.org to confirm.")
                         log("DONE. Stopping.")
                         return
+                    if res == "closed-per-registration":
+                        log("listing was stale; registration already closed")
                     if res.startswith("needs-human"):
                         notify(f"\u26a0\ufe0f <b>NYRR seat needs you</b>\n\n{name} \u2014 {date}\n{role}\n"
                                f"Bot stopped: {res}\n{link}")

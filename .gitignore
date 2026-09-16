@@ -1,3 +1,6 @@
 pw-profile/
 node_modules/
 autoreg.log
+forensics/
+cookies.json
+tgsession.json

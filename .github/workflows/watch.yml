@@ -26,8 +26,10 @@ jobs:
 
       - name: Poll every 5 minutes
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Deliberately NOT passing Telegram creds: this watcher only reads the
+          # listing page, which advertises seats the registration system has
+          # already closed. It logs for history; the local bot does the alerting.
+          NYRR_NO_TELEGRAM: "1"
           NYRR_STATE: state.json
           NYRR_EVIDENCE: alerts-evidence.jsonl
         run: |
