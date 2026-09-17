@@ -40,6 +40,42 @@ def log(msg):
         f.write(line + "\n")
 
 
+EVENT_KEYS = pathlib.Path(__file__).parent / "audit.json"
+
+
+def reg_open_assignments(page, event_key):
+    """Assignments the REGISTRATION system will actually let us book.
+
+    The listing page lies: on 2026-09-16 it showed Bag Check as NEAR CAPACITY
+    while registration reported the whole event closed. An audit of all 20
+    events found 12 with registration closed outright -- every alert Pat chased
+    came from one of those. Only this view is authoritative.
+
+    Returns (status, [(option_key, label)]) where status is 'closed' or 'open'.
+    """
+    page.goto("https://register.nyrr.org/?event=" + event_key,
+              wait_until="domcontentloaded", timeout=45000)
+    page.wait_for_timeout(2500)
+    body = page.inner_text("body").lower()
+    if "registration for this event is closed" in body or "maximum number of participants" in body:
+        return "closed", []
+    out = []
+    for c in page.query_selector_all('input[name="event_option_key"]'):
+        lab = page.evaluate(
+            "e=>{const w=e.closest('li,div,label');return w?w.innerText.replace(/\\s+/g,' '):''}", c) or ""
+        low = lab.lower()
+        if "full" in low:                       # "LOOKS LIKE THIS ASSIGNMENT IS FULL"
+            continue
+        if "no +1" in low or "leader" in low:   # earns no credit / false claim
+            continue
+        if "medical" in low:                    # needs a NYS licence
+            continue
+        if c.get_attribute("disabled") is not None:
+            continue
+        out.append((c.get_attribute("value") or "", lab[:60].strip()))
+    return "open", out
+
+
 KEEPALIVE_EVERY = 240          # seconds; ASP.NET idle timeouts are typically 20 min
 
 
@@ -226,6 +262,12 @@ def main():
             notify("\U0001f510 <b>NYRR: sign in needed</b>\n\nA 'Chrome for Testing' window is "
                    "open on your Mac. Sign into NYRR in it and leave it open. The bot keeps "
                    "watching either way.")
+        try:
+            keys = {e["event"]: e["key"] for e in json.load(open(EVENT_KEYS))}
+            log(f"registration keys loaded for {len(keys)} events")
+        except Exception as e:
+            keys = {}
+            log(f"NO audit.json ({e}) -- run audit.py; falling back to listing")
         tried = set()
         last_ka = time.time()
         warned_out = False
@@ -240,8 +282,35 @@ def main():
                     log("SESSION LOST")
                     notify("\u26a0\ufe0f <b>NYRR session logged out</b>\n\nAuto-register cannot "
                            "book a seat until you sign in again.\nRun ./relogin.sh then ./resume.sh")
+            # Primary path: ask registration directly, event by event.
             for slug, name, date, iso in watch.EVENTS:
                 if iso < watch.AVAILABLE_FROM:
+                    continue
+                ek = keys.get(name)
+                if ek:
+                    try:
+                        st, seats = reg_open_assignments(checker, ek)
+                    except Exception as e:
+                        log(f"reg check failed {name}: {str(e)[:70]}")
+                        continue
+                    for optkey, label in seats:
+                        key2 = (slug, label)
+                        if key2 in tried:
+                            continue
+                        log(f"*** REAL SEAT (registration says bookable): {name} ({date}) {label}")
+                        res = register(checker,
+                                       f"https://register.nyrr.org/?event={ek}&option={optkey}",
+                                       optkey, a.accept_waiver, label)
+                        log(f"RESULT {name} / {label} -> {res}")
+                        if res == "REGISTERED":
+                            DONE.write_text(f"{name} | {label} | {date}\n")
+                            notify(f"\u2705 <b>NYRR 9+1 SECURED</b>\n\n{name} \u2014 {date}\n{label}\n\n"
+                                   f"Registered automatically. Check Your Events on nyrr.org.")
+                            return
+                        if res.startswith("needs-human"):
+                            tried.add(key2)
+                            notify(f"\u26a0\ufe0f <b>NYRR seat needs you</b>\n\n{name} \u2014 {date}\n"
+                                   f"{label}\nBot stopped: {res}")
                     continue
                 try:
                     html_page = watch.fetch(slug)
